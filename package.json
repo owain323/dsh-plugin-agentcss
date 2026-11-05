@@ -1,0 +1,43 @@
+{
+  "name": "dsh-plugin-agentcss",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness 的 agentcss 工具：查组件、生成报告页骨架、交付前自检。",
+  "type": "module",
+  "main": "index.js",
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "agentcss",
+    "html",
+    "report",
+    "css"
+  ],
+  "license": "MIT",
+  "author": "owain323",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/owain323/dsh-plugin-agentcss.git"
+  },
+  "homepage": "https://github.com/owain323/dsh-plugin-agentcss#readme",
+  "bugs": {
+    "url": "https://github.com/owain323/dsh-plugin-agentcss/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "agentcss": "^0.27.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

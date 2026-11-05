@@ -1,0 +1,6 @@
+# 本包作为一个「组合包」（bundle）贡献的配置层。
+# 用户 `dsh plugin add` 之后，这一行会被插进 profile 的插件树；
+# `name` 写的是**包名**，不是相对路径 —— 这样 Node 的模块解析才找得到已安装的代码。
+- insert:
+    - id: agentcss
+      name: dsh-plugin-agentcss
