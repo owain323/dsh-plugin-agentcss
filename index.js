@@ -350,11 +350,18 @@ function newPageTool(recipes) {
       const recipe = args.recipe || recipes[0]
       const html = path.join(dir, 'index.html')
 
-      if (fs.existsSync(html) && args.overwrite !== true) {
-        throw new Error(
-          `目标已存在：${html}。壳不会覆盖已有文件（它可能正在被改）。`
-          + '换一个 dir，或显式传 overwrite=true。',
-        )
+      if (fs.existsSync(html)) {
+        if (args.overwrite !== true) {
+          throw new Error(
+            `目标已存在：${html}。壳不会覆盖已有文件（它可能正在被改）。`
+            + '换一个 dir，或显式传 overwrite=true。',
+          )
+        }
+        // scaffold 自己也不覆盖 —— overwrite 是"我确认要重来"，所以由这里先删。
+        fs.rmSync(html, { force: true })
+      }
+      if (fs.existsSync(dir) && !fs.statSync(dir).isDirectory()) {
+        throw new Error(`${dir} 已存在且不是目录。`)
       }
 
       fs.mkdirSync(dir, { recursive: true })
@@ -429,7 +436,7 @@ const CHECK_OUT = {
 function renderCheck(value) {
   const lines = []
   const head = value.ok ? '通过' : '不通过'
-  lines.push(`${head}：${value.errors} 个 error · ${value.warnings} 个 warn（本地样式表 ${value.css.localSheets} 个，库里 ${value.css.libraryClasses} 个类名）`)
+  lines.push(`${head}：${value.errors} 个 error · ${value.warnings} 个 warn（引了 ${value.css.localSheets} 个本地样式表，库里 ${value.css.libraryClasses} 个类名）`)
   if (value.findings.length > 0) {
     lines.push('')
     for (const f of value.findings) {

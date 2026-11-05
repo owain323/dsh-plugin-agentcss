@@ -148,6 +148,11 @@ try {
   )
   passed += 1
 
+  const again = await tools.get('agentcss_new_page').execute({ dir: pageDir, overwrite: true })
+  assert.equal(again.ok, true, 'explicit overwrite=true 应当重建成功')
+  assert.ok(fs.existsSync(again.html))
+  passed += 1
+
   await assert.rejects(
     () => tools.get('agentcss_check').execute({ path: 'relative.html' }),
     /绝对路径/,
@@ -158,5 +163,5 @@ try {
   fs.rmSync(workdir, { recursive: true, force: true })
 }
 
-console.log(`through: ${passed}/6 组断言全部通过`)
+console.log(`through: ${passed}/7 组断言全部通过`)
 console.log(`tools: ${registered.map((d) => d.name).join(', ')}`)

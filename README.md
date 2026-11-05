@@ -66,7 +66,7 @@ dsh plugin --profile desktop add dsh-plugin-agentcss
 
 ## 它**不含**什么
 
-这个包只有约 400 行适配代码，**没有任何组件定义**。
+这个包只有约 500 行适配代码（含注释），**没有任何组件定义**。
 
 组件、令牌、判据全部来自 npm 上的 `agentcss`。这是刻意的：`agentcss_check` 的类名白名单是
 **从库的 CSS 现算**的，复制一份组件树过来就等于同时存在两份真值，改一次 token 就开始不同步，
