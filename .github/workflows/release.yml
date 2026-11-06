@@ -52,8 +52,11 @@ jobs:
             exit 1
           fi
 
+      # 🔴 用 install 而不是 ci：本仓库的 .gitignore 排除了 package-lock.json
+      #   （插件的产物只依赖 package.json 的 dependencies），CI 里没有 lock，
+      #   `npm ci` 会直接 EUSAGE 退出。冒烟工作流也是这么装的，保持一致。
       - name: 安装依赖
-        run: npm ci --no-audit --no-fund
+        run: npm install --no-audit --no-fund
 
       - name: 加载契约（四个工具必须都在）
         run: node test/smoke.mjs
