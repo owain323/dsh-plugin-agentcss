@@ -84,7 +84,7 @@ dsh plugin --profile desktop add https://github.com/owain323/dsh-plugin-agentcss
 | 项 | 要求 |
 |---|---|
 | Node | >= 18（Harness 桌面版自带 24） |
-| `agentcss` | `^0.27.3` —— `ai scaffold` / `ai check` 是 0.27.0 的能力；PDF 的就绪契约与失败保护是 0.27.1；纸面墨阶（白底、黑字、线型区分）是 0.27.3 才补上的 |
+| `agentcss` | `^0.27.4` —— `ai scaffold` / `ai check` 是 0.27.0；PDF 的就绪契约与失败保护是 0.27.1；纸面墨阶是 0.27.3；图不溢出容器是 0.27.4 |
 | Harness | 0.2.x 实测（0.2.2-rc.1） |
 
 两个刻意的选择：
@@ -107,10 +107,11 @@ dsh plugin --profile desktop add https://github.com/owain323/dsh-plugin-agentcss
 
 - **壳不覆盖已有文件。** 目标 `index.html` 存在时默认拒绝，除非显式 `overwrite: true` ——
   它可能正在被改。
-- **版本范围收紧到 `^0.27.3`。** 0.x 的 caret 是「只在这个 minor 内」，
+- **版本范围收紧到 `^0.27.4`。** 0.x 的 caret 是「只在这个 minor 内」，
   库出 0.28 时插件要跟着升一次。这是有意的：CLI 的开关语义比 CSS 更容易变。
-  下限选 0.27.3 而不是 0.27.0，是因为 `agentcss_pdf` 的产出一半取决于库的 print 层：
-  旧版导出的 PDF 是灰底浅字，屏幕上看着正常，打出来是"缺墨"。
+  下限选 0.27.4，是因为 `agentcss_pdf` 的产出一半取决于库的 print 层：
+  0.27.3 之前是灰底浅字；0.27.4 之前 `.rep__fig` 里的图没有宽度约束，
+  一张 1920px 的截图会把整页撑破 —— 两者在屏幕上都不明显，打出来才知道。
 
 ## License
 
