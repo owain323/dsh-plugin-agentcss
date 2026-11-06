@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-agentcss",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "DeepSeek Harness 的 agentcss 工具：查组件、生成报告页骨架、交付前自检、导出 PDF。",
   "type": "module",
   "main": "index.js",

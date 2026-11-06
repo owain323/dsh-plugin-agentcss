@@ -117,6 +117,25 @@ dsh plugin --profile desktop add https://github.com/owain323/dsh-plugin-agentcss
   一张 1920px 的截图会把整页撑破；0.27.5 才把仓库名与包名统一。
   这三件事在屏幕上都不明显，要么打出来才知道，要么写进 URL 才知道。
 
+## 发版
+
+打 tag 即发版。走 GitHub Actions + OIDC，**不需要任何长期令牌**：
+
+```sh
+# 改 package.json 的 version（或 npm version patch --no-git-tag-version）
+git commit -am "chore: 0.2.4"
+git tag -a v0.2.4 -m "agentcss ^0.27.5"
+git push --atomic origin main v0.2.4
+```
+
+`.github/workflows/release.yml` 依次做五件事：tag 与 `package.json` 版本一致 →
+加载契约冒烟 → 拒绝长期令牌（有 token 会盖过 OIDC，包就没有签名）→
+`npm publish --provenance` → 建 GitHub Release。
+
+⚠️ npm 后台那条 trusted publisher 绑的是**仓库名 + 工作流文件名**。
+改仓库名、或把 `release.yml` 改名，发布就会失效（404/403），必须同步去
+npm 的 Settings → Trusted publishing 重新绑一次。
+
 ## License
 
 MIT

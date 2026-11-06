@@ -1,0 +1,83 @@
+name: release
+
+# 打 tag 即发版：OIDC 现换短期凭证 + provenance 签名，不需要任何长期令牌。
+#
+# 为什么要有这个文件：插件此前是本地 `npm publish` 发的，用的是个人 token。
+# 那样发出去的包没有 provenance —— 谁发的、从哪个提交构建的都无法验证。
+# npm 上的 trusted publisher 绑的就是本文件的路径（.github/workflows/release.yml），
+# 所以**改文件名会让发布直接失效**，必须同步改 npm 那边的配置。
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write    # 建 GitHub Release
+  id-token: write    # provenance 必需：OIDC 令牌由这里签
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: 校验 → 签名发布 → Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          # 🔴 故意**不**写 registry-url：setup-node 会因此生成一条
+          #   `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}`，
+          #   变量为空时 npm 先撞 ENEEDAUTH，根本走不到 OIDC。
+      # 🔴 trusted publishing 要 npm >= 11.5.1，Node 22 自带 10.x。
+      #   版本必须打进日志：失败时"CLI 太旧"和"OIDC 没配好"要能一眼分开。
+      - name: 升级 npm（trusted publishing 需要 >= 11.5.1）
+        run: |
+          set -eu
+          npm install -g npm@latest
+          echo "npm=$(npm --version)  node=$(node --version)"
+
+      - name: tag 与 package.json 版本必须一致
+        run: |
+          set -eu
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG="$(node -p "require('./package.json').version")"
+          echo "tag=$TAG  package.json=$PKG"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error::tag $GITHUB_REF_NAME 与 package.json 的 $PKG 不一致 —— 拒绝发布"
+            exit 1
+          fi
+
+      - name: 安装依赖
+        run: npm ci --no-audit --no-fund
+
+      - name: 加载契约（四个工具必须都在）
+        run: node test/smoke.mjs
+
+      # 有长期令牌存在时会盖过 OIDC，发出去的包就没有签名了 —— 直接拒发。
+      - name: 不许有长期令牌
+        run: |
+          set -eu
+          if [ -n "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "::error::NODE_AUTH_TOKEN 存在，它会盖过 OIDC，先去掉再发"
+            exit 1
+          fi
+          echo "no long-lived token: ok"
+
+      - name: 发布到 npm（OIDC / provenance）
+        run: npm publish --provenance --access public
+
+      - name: 建 GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes "npm: \`$(node -p "require('./package.json').name")@$(node -p "require('./package.json').version")\`
+
+          由 GitHub Actions 通过 OIDC 发布，带 provenance 签名。"
