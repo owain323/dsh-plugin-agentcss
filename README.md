@@ -2,7 +2,7 @@
 
 > DeepSeek Harness 插件：让 agent 写出**能看**的报告页，而不是一堆没样式的 div。
 
-English: DeepSeek Harness tools for [agentcss](https://github.com/owain323/frontend-lib) —
+English: DeepSeek Harness tools for [agentcss](https://github.com/owain323/agentcss) —
 look up components, scaffold a report page, validate the result, and export it to PDF.
 
 ---
@@ -23,14 +23,17 @@ look up components, scaffold a report page, validate the result, and export it t
 
 Harness 里「添加插件」，三个入口任选其一：
 
-- **GitHub 地址（现在就能用）**：`https://github.com/owain323/dsh-plugin-agentcss`
+- **npm 包名（推荐）**：`dsh-plugin-agentcss` —— 版本随库走，升级最省事
+- **GitHub 地址**：`https://github.com/owain323/dsh-plugin-agentcss`
 - **本地目录**：克隆后填目录路径
-- **npm 包名**：`dsh-plugin-agentcss` —— **发布到 npm 之后**可用；
-  在此之前请用上面两个入口，写包名会 404
 
-命令行等价写法（GitHub 地址）：
+命令行等价写法：
 
 ```sh
+# 从 npm 装
+dsh plugin --profile desktop add dsh-plugin-agentcss
+
+# 或从 GitHub 装（跟踪 main）
 dsh plugin --profile desktop add https://github.com/owain323/dsh-plugin-agentcss
 ```
 
@@ -84,7 +87,7 @@ dsh plugin --profile desktop add https://github.com/owain323/dsh-plugin-agentcss
 | 项 | 要求 |
 |---|---|
 | Node | >= 18（Harness 桌面版自带 24） |
-| `agentcss` | `^0.27.4` —— `ai scaffold` / `ai check` 是 0.27.0；PDF 的就绪契约与失败保护是 0.27.1；纸面墨阶是 0.27.3；图不溢出容器是 0.27.4 |
+| `agentcss` | `^0.27.5` —— `ai scaffold` / `ai check` 是 0.27.0；PDF 的就绪契约与失败保护是 0.27.1；纸面墨阶是 0.27.3；图不溢出容器是 0.27.4；仓库名与包名统一、站点根路径改 `/agentcss/` 是 0.27.5 |
 | Harness | 0.2.x 实测（0.2.2-rc.1） |
 
 两个刻意的选择：
@@ -107,11 +110,12 @@ dsh plugin --profile desktop add https://github.com/owain323/dsh-plugin-agentcss
 
 - **壳不覆盖已有文件。** 目标 `index.html` 存在时默认拒绝，除非显式 `overwrite: true` ——
   它可能正在被改。
-- **版本范围收紧到 `^0.27.4`。** 0.x 的 caret 是「只在这个 minor 内」，
+- **版本范围收紧到 `^0.27.5`。** 0.x 的 caret 是「只在这个 minor 内」，
   库出 0.28 时插件要跟着升一次。这是有意的：CLI 的开关语义比 CSS 更容易变。
-  下限选 0.27.4，是因为 `agentcss_pdf` 的产出一半取决于库的 print 层：
+  下限选 0.27.5，是因为过半能力取决于库那一层：
   0.27.3 之前是灰底浅字；0.27.4 之前 `.rep__fig` 里的图没有宽度约束，
-  一张 1920px 的截图会把整页撑破 —— 两者在屏幕上都不明显，打出来才知道。
+  一张 1920px 的截图会把整页撑破；0.27.5 才把仓库名与包名统一。
+  这三件事在屏幕上都不明显，要么打出来才知道，要么写进 URL 才知道。
 
 ## License
 
