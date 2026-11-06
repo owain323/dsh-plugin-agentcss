@@ -23,14 +23,15 @@ look up components, scaffold a report page, validate the result, and export it t
 
 Harness 里「添加插件」，三个入口任选其一：
 
-- **npm 包名**：`dsh-plugin-agentcss`
-- **GitHub 地址**：`https://github.com/owain323/dsh-plugin-agentcss`
+- **GitHub 地址（现在就能用）**：`https://github.com/owain323/dsh-plugin-agentcss`
 - **本地目录**：克隆后填目录路径
+- **npm 包名**：`dsh-plugin-agentcss` —— **发布到 npm 之后**可用；
+  在此之前请用上面两个入口，写包名会 404
 
-命令行等价写法：
+命令行等价写法（GitHub 地址）：
 
 ```sh
-dsh plugin --profile desktop add dsh-plugin-agentcss
+dsh plugin --profile desktop add https://github.com/owain323/dsh-plugin-agentcss
 ```
 
 装完重启 Harness。工具会出现在模型的可调用列表里，名字以 `agentcss_` 开头。
