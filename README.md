@@ -3,7 +3,7 @@
 > DeepSeek Harness 插件：让 agent 写出**能看**的报告页，而不是一堆没样式的 div。
 
 English: DeepSeek Harness tools for [agentcss](https://github.com/owain323/frontend-lib) —
-look up components, scaffold a report page, and validate the result before delivery.
+look up components, scaffold a report page, validate the result, and export it to PDF.
 
 ---
 
@@ -17,7 +17,7 @@ look up components, scaffold a report page, and validate the result before deliv
 | `<head>` 漏一条 `<link>` | 组件类名都对，但那部分完全没样式 | 没人，直到人打开看 |
 | 骨架层级错 | 布局塌了，但不抛异常 | 没人，直到人打开看 |
 
-这个插件给三个工具，正好对应这三件事：**查得到、起得对、交得出去**。
+这个插件给四个工具，正好对应这几件事：**查得到、起得对、交得出去、发得出去**。
 
 ## 安装
 
@@ -35,17 +35,23 @@ dsh plugin --profile desktop add dsh-plugin-agentcss
 
 装完重启 Harness。工具会出现在模型的可调用列表里，名字以 `agentcss_` 开头。
 
-## 三个工具
+## 四个工具
 
 | 工具 | 什么时候用 | 返回什么 |
 |---|---|---|
 | `agentcss_catalog` | 写 HTML 之前。按关键词或分层查组件 | 组件 id、分层、根类名、**要引的样式表路径**、一句话用途 |
 | `agentcss_new_page` | 新页面从这一步开始，不要手写 `<head>` | 一个自包含目录：`index.html` + `agentcss/`（库样式表副本） |
 | `agentcss_check` | 每次改完页面 | 结构化问题列表：规则名、行号、级别、说明 |
+| `agentcss_pdf` | 内容定稿、要发出去或要交给打印时 | PDF 路径、页数、纸幅、字节数；有 JS 异常会点名 |
 
 `agentcss_check` 查的是：类名库里有没有、类名有但这页没引到定义它的样式表、图缺不缺 `alt`、
 表头有没有 `scope`、标题有没有跳级、表单控件有没有可读名称、id 有没有重复……
 **纯静态，不联网、不开浏览器。**
+
+`agentcss_pdf` 会起一次本机 Chrome/Edge（不开端口、不复用你的浏览器配置），
+导出顺序是库定死的：页面加载 → 字体就绪 → 可选可见元素 → 额外等待 → 定格动画 → 打印。
+**失败或超出页数预算时不改写旧 PDF，也不替你截断内容** —— 截断是静默丢东西，
+比报错停下危险得多。
 
 ## 典型一轮
 
@@ -66,7 +72,7 @@ dsh plugin --profile desktop add dsh-plugin-agentcss
 
 ## 它**不含**什么
 
-这个包只有约 500 行适配代码（含注释），**没有任何组件定义**。
+这个包只有约 700 行适配代码（含注释），**没有任何组件定义**。
 
 组件、令牌、判据全部来自 npm 上的 `agentcss`。这是刻意的：`agentcss_check` 的类名白名单是
 **从库的 CSS 现算**的，复制一份组件树过来就等于同时存在两份真值，改一次 token 就开始不同步，
@@ -77,7 +83,7 @@ dsh plugin --profile desktop add dsh-plugin-agentcss
 | 项 | 要求 |
 |---|---|
 | Node | >= 18（Harness 桌面版自带 24） |
-| `agentcss` | `^0.27.0` —— 需要 `ai scaffold` 与 `ai check <page.html>` 这两个 0.27.0 才有的能力 |
+| `agentcss` | `^0.27.1` —— `ai scaffold` / `ai check` 是 0.27.0 的能力，PDF 的就绪契约与失败保护是 0.27.1 才补上的 |
 | Harness | 0.2.x 实测（0.2.2-rc.1） |
 
 两个刻意的选择：
@@ -93,13 +99,14 @@ dsh plugin --profile desktop add dsh-plugin-agentcss
 - `dir` / `path` 必须传**绝对路径**。写错会明确报错，不会猜。
 - 建页时会把库样式表复制到页面旁边（约 340 KB / 80 个文件）。这是拿体积换**自包含**：
   页面双击就能打开，不发网络请求，发给别人也不会掉样式。
-- `ai shot` / `ai pdf` 还没接进来（库里有这两个能力，插件暂只做「写对」这一段）。
+- `ai shot`（横向溢出与 JS 报错的截图体检）还没接进来 —— 它是「看」的循环，与这里「写对 + 发出去」不是一条线。
+- PDF 是**屏幕渲染结果**。实体打印机的纸张、驱动缩放、双面、页眉页脚仍需人工打样一次；`agentcss_pdf` 不声称替你验过。
 
 ## 设计取舍
 
 - **壳不覆盖已有文件。** 目标 `index.html` 存在时默认拒绝，除非显式 `overwrite: true` ——
   它可能正在被改。
-- **版本范围收紧到 `^0.27.0`。** 0.x 的 caret 是「只在这个 minor 内」，
+- **版本范围收紧到 `^0.27.1`。** 0.x 的 caret 是「只在这个 minor 内」，
   库出 0.28 时插件要跟着升一次。这是有意的：CLI 的开关语义比 CSS 更容易变。
 
 ## License

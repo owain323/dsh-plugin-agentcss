@@ -1,5 +1,5 @@
 /**
- * dsh-plugin-agentcss —— 把 agentcss 的三个动作，做成 DeepSeek Harness 能调的三个工具。
+ * dsh-plugin-agentcss —— 把 agentcss 的四个动作，做成 DeepSeek Harness 能调的四个工具。
  *
  * ============================================================================
  * 🔴 这个包**不含任何组件定义**
@@ -524,10 +524,176 @@ function checkTool(recipes) {
   }
 }
 
+/* ==========================================================================
+ * 工具四：导出 PDF
+ * ==========================================================================
+ * 为什么单独做一个工具、而不是让模型自己拼命令：
+ * `ai pdf` 的导出顺序是**契约**（load → fonts.ready → 可选可见元素 → 额外等待
+ * → 动画终态 → printToPDF），失败时旧文件必须原样保留、超页数预算不许静默截断。
+ * 这些规矩写在库的门禁里；插件这边只负责把参数收敛成那几条，别让模型即兴发挥。
+ */
+
+const PAPERS = ['a4', 'letter', 'a5', 'a3', 'legal']
+
+const PDF_OUT = {
+  type: 'object',
+  properties: {
+    ok: { type: 'boolean' },
+    out: { type: 'string' },
+    pages: { type: 'number' },
+    bytes: { type: 'number' },
+    paper: { type: 'string' },
+    paperSize: { type: 'string' },
+    margin: { type: 'string' },
+    jsErrors: { type: 'number' },
+  },
+  required: ['ok', 'out', 'pages', 'bytes', 'paper', 'paperSize', 'margin', 'jsErrors'],
+  additionalProperties: false,
+}
+
+function renderPdf(value) {
+  const kb = Math.max(1, Math.round(value.bytes / 1024))
+  const lines = [
+    `已导出：${value.out}`,
+    `${value.pages} 页 · ${value.paperSize} · ${kb} KB · 纸幅 ${value.paper} · 边距 ${value.margin}`,
+  ]
+  if (value.jsErrors > 0) {
+    lines.push('')
+    lines.push(`⚠️ 页面有 ${value.jsErrors} 条未捕获的 JS 异常 —— 导出的内容可能缺块，先修页面再导一次。`)
+  }
+  lines.push('')
+  lines.push('这是屏幕渲染的电子 PDF。实体打印机的纸张、缩放、双面、页眉页脚仍需人工打样一次。')
+  return lines.join('\n')
+}
+
+function pdfTool() {
+  return {
+    name: 'agentcss_pdf',
+    description:
+      '把 HTML 页面导出成 PDF（本机 Chrome/Edge 无头渲染，等字体与就绪元素后再打印）。'
+      + '失败或超出页数预算时不会改写已有的旧 PDF，也不会替你截断内容。'
+      + '页面改完要发出去、或者要交给打印时用这一步。',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'HTML 绝对路径，或 http(s) 地址。' },
+        out: {
+          type: 'string',
+          description: 'PDF 输出绝对路径。省略时与 HTML 同名同目录；远程地址必须显式给。',
+        },
+        paper: {
+          type: 'string',
+          enum: PAPERS,
+          description: '纸张，默认 a4。页面自己写了 @page 时以页面为准，这个参数不生效。',
+        },
+        margin: { type: 'string', description: 'CSS 长度，例如 "18mm 15mm"。' },
+        maxPages: {
+          type: 'number',
+          description: '页数上限（≥1）。超了判失败并保留完整产物 —— 不替你截断。',
+        },
+        waitMs: {
+          type: 'number',
+          description: '字体就绪后再等多少毫秒（0–60000，默认 800）。',
+        },
+        readySelector: {
+          type: 'string',
+          description: '必须可见且有尺寸才算就绪的 CSS 选择器；只存在但 display:none 不算。',
+        },
+      },
+      required: ['path'],
+      additionalProperties: false,
+    },
+    output: { schema: PDF_OUT, render: (_args, value) => textBlock(renderPdf(value)) },
+    async execute(args, exec) {
+      const raw = typeof args.path === 'string' ? args.path : ''
+      const remote = /^https?:\/\//i.test(raw)
+      if (!remote && raw.trim() === '') throw new Error('path 不能为空')
+      const src = remote ? raw : requireAbsolute(raw, 'path')
+      if (!remote && !fs.existsSync(src)) throw new Error(`找不到文件：${src}`)
+
+      const cliArgs = ['pdf', src, '--json']
+      if (args.out !== undefined) cliArgs.push(`--out=${requireAbsolute(args.out, 'out')}`)
+
+      if (args.paper !== undefined) {
+        if (!PAPERS.includes(args.paper)) {
+          throw new Error(`paper 只能是 ${PAPERS.join(' / ')}，收到 "${args.paper}"`)
+        }
+        cliArgs.push(`--paper=${args.paper}`)
+      }
+
+      if (args.margin !== undefined) {
+        if (typeof args.margin !== 'string' || args.margin.trim() === '') {
+          throw new Error('margin 不能为空；不需要就整个参数不传')
+        }
+        cliArgs.push(`--margin=${args.margin}`)
+      }
+
+      if (args.maxPages !== undefined) {
+        if (!Number.isInteger(args.maxPages) || args.maxPages < 1) {
+          throw new Error(`maxPages 必须是不小于 1 的整数，收到 ${args.maxPages}`)
+        }
+        cliArgs.push(`--max-pages=${args.maxPages}`)
+      }
+
+      if (args.waitMs !== undefined) {
+        if (!Number.isInteger(args.waitMs) || args.waitMs < 0 || args.waitMs > 60000) {
+          throw new Error(`waitMs 必须是 0–60000 的整数，收到 ${args.waitMs}`)
+        }
+        cliArgs.push(`--wait-ms=${args.waitMs}`)
+      }
+
+      if (args.readySelector !== undefined) {
+        if (typeof args.readySelector !== 'string' || args.readySelector.trim() === '') {
+          throw new Error('readySelector 必须是非空 CSS 选择器')
+        }
+        cliArgs.push(`--ready-selector=${args.readySelector}`)
+      }
+
+      // 渲染要起浏览器；120 秒是 CLI 调用的默认值，PDF 这边放宽一档。
+      const result = await runCli(cliArgs, { signal: exec && exec.signal, timeout: 180000 })
+
+      let out = null
+      try {
+        out = parseJsonOut(result.stdout)
+      } catch {
+        out = null
+      }
+
+      if (result.code !== 0) {
+        const detail = (out && out.error && out.error.message)
+          || excerpt(result.stderr) || excerpt(result.stdout) || '未知原因'
+        throw new Error(`pdf 没能导出（退出码 ${result.code}）：${detail}`)
+      }
+      if (!out) throw new Error(`pdf 没有输出 JSON：${excerpt(result.stdout) || '(空)'}`)
+      if (!out.out) throw new Error('导出报告里没有产物路径，视同失败')
+
+      // 报告说成功、文件却不在（或 0 字节）—— 这类"假成功"必须在插件层拦住，
+      // 不能交给模型去核。
+      const bytes = Number(out.bytes || 0)
+      if (bytes <= 0) throw new Error(`导出的 PDF 是空文件：${out.out}`)
+      if (!fs.existsSync(out.out)) {
+        throw new Error(`导出报告说成功，但目标文件不在：${out.out}（检查输出目录是否可写）`)
+      }
+
+      return {
+        ok: true,
+        out: String(out.out),
+        pages: Number(out.pages || 0),
+        bytes,
+        paper: String(out.paper || '由页面自己决定'),
+        paperSize: String(out.paperSize || '?'),
+        margin: String(out.margin || '由页面自己决定'),
+        jsErrors: Array.isArray(out.jsErrors) ? out.jsErrors.length : 0,
+      }
+    },
+  }
+}
+
 /** 插件入口。Cordis 会把 `ctx` 给进来，注册出去的东西卸载时自动撤掉。 */
 export function apply(ctx) {
   const recipes = knownRecipes()
   ctx.tools.register(catalogTool())
   ctx.tools.register(newPageTool(recipes))
   ctx.tools.register(checkTool(recipes))
+  ctx.tools.register(pdfTool())
 }

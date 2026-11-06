@@ -1,7 +1,7 @@
 {
   "name": "dsh-plugin-agentcss",
-  "version": "0.1.0",
-  "description": "DeepSeek Harness 的 agentcss 工具：查组件、生成报告页骨架、交付前自检。",
+  "version": "0.2.0",
+  "description": "DeepSeek Harness 的 agentcss 工具：查组件、生成报告页骨架、交付前自检、导出 PDF。",
   "type": "module",
   "main": "index.js",
   "files": [
@@ -33,7 +33,7 @@
     "node": ">=18"
   },
   "dependencies": {
-    "agentcss": "^0.27.0"
+    "agentcss": "^0.27.1"
   },
   "dsh": {
     "bundle": {

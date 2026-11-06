@@ -6,7 +6,7 @@ on:
 
 jobs:
   smoke:
-    name: 冒烟（加载契约 + 三个工具真跑）
+    name: 冒烟（加载契约 + 四个工具真跑）
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

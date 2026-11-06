@@ -1,12 +1,12 @@
 /**
- * 冒烟测试 —— 在**没有 Harness** 的情况下，把插件的三条契约验一遍。
+ * 冒烟测试 —— 在**没有 Harness** 的情况下，把插件的契约验一遍。
  *
  * 验的是三件事，缺一件都不算通过：
  *   ① 模块能按 Cordis 的函数式插件加载（name / inject / apply）
- *   ② 三个工具的定义形状合法：parameters 与 output.schema 都落在
+ *   ② 四个工具的定义形状合法：parameters 与 output.schema 都落在
  *      dsh-tools 支持的 JSON Schema 子集里（写成 type 数组、写了 minLength，
  *      在 Harness 里会在 register 那一刻抛 UNSUPPORTED_SCHEMA）
- *   ③ 三个工具真的能跑：查得到组件、建得出页面、查得出错误
+ *   ③ 四个工具真的能跑：查得到组件、建得出页面、查得出错误、导得出 PDF
  *
  * 运行：node test/smoke.mjs
  */
@@ -74,9 +74,9 @@ assert.deepEqual(inject, ['tools'], 'inject 必须且只需要 tools')
 const registered = []
 apply({ tools: { register(def) { registered.push(def) } } })
 
-assert.equal(registered.length, 3, '必须注册三个工具')
+assert.equal(registered.length, 4, '必须注册四个工具')
 const tools = new Map(registered.map((def) => [def.name, def]))
-for (const id of ['agentcss_catalog', 'agentcss_new_page', 'agentcss_check']) {
+for (const id of ['agentcss_catalog', 'agentcss_new_page', 'agentcss_check', 'agentcss_pdf']) {
   assert.ok(tools.has(id), `缺工具：${id}`)
 }
 
@@ -98,6 +98,8 @@ for (const def of registered) {
 const tmpRoot = process.env.AGENTCSS_DSH_TMP || os.tmpdir()
 fs.mkdirSync(tmpRoot, { recursive: true })
 const workdir = fs.mkdtempSync(path.join(tmpRoot, 'agentcss-dsh-'))
+// 计划跑几组。改测试就改这里 —— 少跑一组必须当场失败，不能"全部通过"。
+const PLAN = 9
 let passed = 0
 
 try {
@@ -159,9 +161,35 @@ try {
     '相对路径必须被拒绝并说明原因',
   )
   passed += 1
+
+  const pdfOut = path.join(workdir, 'report.pdf')
+  const pdf = await tools.get('agentcss_pdf').execute({ path: created.html, out: pdfOut })
+  assert.equal(pdf.ok, true, 'PDF 导出应当成功')
+  assert.ok(fs.existsSync(pdfOut), 'PDF 没落到磁盘上')
+  assert.ok(pdf.bytes > 1000, `PDF 只有 ${pdf.bytes} 字节，明显不对`)
+  assert.ok(pdf.pages >= 1, '至少要有一页')
+  assert.match(pdf.paperSize, /^[0-9]+×[0-9]+pt$/, `纸幅读不出来：${pdf.paperSize}`)
+  const pdfText = tools.get('agentcss_pdf').output.render({}, pdf)[0]
+  assert.equal(pdfText.type, 'text')
+  assert.match(pdfText.text, /已导出/)
+  passed += 1
+
+  // 超页数预算：必须**判失败**，不能悄悄截断（产物保留是库的既定行为）
+  const longPath = path.join(pageDir, 'long.html')
+  const filler = Array.from({ length: 120 }, (_, i) => `<p>第 ${i + 1} 段：用于把内容撑到多页。</p>`).join('')
+  fs.writeFileSync(longPath, `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">`
+    + `<title>long</title><style>@page{size:A4;margin:15mm}body{font:16px/1.6 serif}</style></head>`
+    + `<body>${filler}</body></html>`, 'utf8')
+  await assert.rejects(
+    () => tools.get('agentcss_pdf').execute({ path: longPath, out: path.join(workdir, 'long.pdf'), maxPages: 1 }),
+    /页数预算/,
+    '超预算必须判失败并说清原因（不替使用者截断）',
+  )
+  passed += 1
 } finally {
   fs.rmSync(workdir, { recursive: true, force: true })
 }
 
-console.log(`through: ${passed}/7 组断言全部通过`)
+assert.equal(passed, PLAN, '实际跑过的组数与计划不一致 —— 有断言被跳过')
+console.log(`through: ${passed}/${PLAN} 组断言全部通过`)
 console.log(`tools: ${registered.map((d) => d.name).join(', ')}`)
