@@ -57,6 +57,11 @@ dsh plugin --profile desktop add https://github.com/owain323/dsh-plugin-agentcss
 **失败或超出页数预算时不改写旧 PDF，也不替你截断内容** —— 截断是静默丢东西，
 比报错停下危险得多。
 
+**远程 `http(s)` 地址默认关闭。** `path` 能被网页、上传文档或其它不可信内容
+影响时，浏览器就可能变成访问内网的入口。要用远程页面，得显式传
+`allowRemote: true`，并且已装 `agentcss >= 0.27.9`；开启后插件会附带
+`--network-policy=strict`。日常建议先把页面存成本地 HTML，用绝对路径调用。
+
 ## 典型一轮
 
 ```
@@ -87,7 +92,7 @@ dsh plugin --profile desktop add https://github.com/owain323/dsh-plugin-agentcss
 | 项 | 要求 |
 |---|---|
 | Node | >= 18（Harness 桌面版自带 24） |
-| `agentcss` | `^0.27.7` —— `ai scaffold` / `ai check` 是 0.27.0；PDF 的就绪契约是 0.27.1；纸面墨阶是 0.27.3；图不溢出容器是 0.27.4；仓库名与包名统一、站点根路径改 `/agentcss/` 是 0.27.5；**导出判定失败不改写旧 PDF 是 0.27.7** |
+| `agentcss` | `^0.27.9` —— `ai scaffold` / `ai check` 是 0.27.0；PDF 的就绪契约是 0.27.1；纸面墨阶是 0.27.3；图不溢出容器是 0.27.4；仓库名与包名统一、站点根路径改 `/agentcss/` 是 0.27.5；导出判定失败不改写旧 PDF 是 0.27.7；**`--network-policy=strict` 远程网络边界是 0.27.8、代理误伤修复是 0.27.9** |
 | Harness | 0.2.x 实测（0.2.2-rc.1） |
 
 两个刻意的选择：
@@ -102,12 +107,25 @@ dsh plugin --profile desktop add https://github.com/owain323/dsh-plugin-agentcss
 
 - `dir` / `path` 必须传**绝对路径**，并且不能落在系统 / 程序 / 应用数据目录
   （含指向那里的符号链接）、不能是盘符根。写错会明确报错，不会猜。
-- 远程 `http(s)` 地址会先过一道边界：环回、私网、链路本地（含云元数据地址）、
-  非 http(s) scheme、带用户名密码的 URL 一律拒绝。等价 IP 写法
-  （`2130706433` / `127.1` / `0`）会被规范化后再判。
-  **仍有两处不覆盖**：域名解析到内网（DNS rebinding），以及远程站点把页面
-  重定向到内网地址（重定向由 Chromium 跟随，插件看不到最终 URL）。
-  如果工具的入参会来自不可信内容，应把远程能力整体关闭，而不是只靠这道静态校验。
+- **远程能力默认关闭**（`allowRemote` 默认 `false`）。这是首要边界：不可信内容
+  能影响 `path` 时，保持关闭，先把页面存成本地 HTML 再用绝对路径调用。
+- 显式开启时是三层，不再是"只看一眼 URL 字符串"：
+  ① 插件侧静态边界 —— 环回、私网、链路本地（含云元数据）、非 http(s) scheme、
+  带凭据的 URL 一律拒绝；等价 IP 写法（`2130706433` / `127.1` / `0`）先规范化再判；
+  ② 库侧 `--network-policy=strict` —— 导航前解析域名并要求全部 A/AAAA 为公网，
+  再把公网 IPv4 用 Chrome 的 `--host-resolver-rules` 固定住（DNS rebinding 失去
+  第二次解析的机会），同时用 `Network.setBlockedURLs` 在浏览器侧拦私网字面量；
+  ③ 渲染期间复核 `Network.requestWillBeSent`（含重定向两端）与
+  `Network.responseReceived.remoteIPAddress`，发现越界就不产出 PDF。
+  开启还要求 `agentcss >= 0.27.9`：更早的版本要么没有这套策略，要么在
+  本地代理下会误伤全部公网渲染，插件会**拒绝开启**，不退化成半套防护。
+- **仍然要如实说的边界**：`strict` 的第 ③ 层是"发现即拒绝交付"，不是"连接从未
+  发生"；事前拦截靠 ①②。IPv6-only 域名没有可固定的 IPv4，此时只靠 ②③，
+  防护弱一档。**开了本地代理时还会再降一档**：Chrome 把域名交给代理，
+  `--host-resolver-rules` 不再生效、远端 IP 一律是 `127.0.0.1`，此时有效的主要是
+  ①② 的静态部分；库的导出结果会带 `networkPolicyDegraded: true` 明说这件事。
+  远程页面本身也不注入 `@page`（见库 `docs/PRINT.md` §8.6）。
+  ⇒ 所以**入参不可信时仍以"默认关闭"为主防线**，不要把 strict 当成万能许可。
 - 建页时会把库样式表复制到页面旁边（约 340 KB / 80 个文件）。这是拿体积换**自包含**：
   页面双击就能打开，不发网络请求，发给别人也不会掉样式。
 - `ai shot`（横向溢出与 JS 报错的截图体检）还没接进来 —— 它是「看」的循环，与这里「写对 + 发出去」不是一条线。
@@ -120,15 +138,19 @@ dsh plugin --profile desktop add https://github.com/owain323/dsh-plugin-agentcss
   都生成成功后才提交；提交时旧 `index.html` 先备份，中途任一步失败自动还原。
   样式目录只覆盖库自带的同名文件，**不删除**你放在 `agentcss/` 里的其它文件；
   代价是库升级后废弃的旧文件可能留在目录里（不会被页面引用，可自行清理）。
-- **版本范围收紧到 `^0.27.7`。** 0.x 的 caret 是「只在这个 minor 内」，
+- **版本范围收紧到 `^0.27.9`。** 0.x 的 caret 是「只在这个 minor 内」，
   库出 0.28 时插件要跟着升一次。这是有意的：CLI 的开关语义比 CSS 更容易变。
-  下限选 0.27.7，是因为过半能力取决于库那一层：
+  下限选 0.27.9，是因为过半能力取决于库那一层：
   0.27.3 之前是灰底浅字；0.27.4 之前 `.rep__fig` 里的图没有宽度约束，
   一张 1920px 的截图会把整页撑破；0.27.5 才把仓库名与包名统一；
   **0.27.7 之前，PDF 导出判定失败（超页数预算 / 页树读数不一致）会先替换
   最终输出再报错，把调用方手里的旧 PDF 悄悄换掉** —— 而本插件对外承诺
   「失败或超预算时不改写旧 PDF」。这条承诺由库兑现，所以下限必须卡在修复版，
   冒烟测试也把「预置旧 PDF + 超预算 ⇒ 逐字节不变」写成了硬断言。
+  **0.27.8 引入 `--network-policy=strict`**，但它在本机代理环境下会把所有公网
+  渲染一起拒掉；0.27.9 修了这处误伤并回传 `networkPolicyDegraded`。远程能力
+  显式开启时，重定向到内网与 DNS rebinding 都要靠库在浏览器里挡，
+  所以开启条件卡在 0.27.9，更旧的版本直接拒开。
 
 ## 发版
 
@@ -136,9 +158,9 @@ dsh plugin --profile desktop add https://github.com/owain323/dsh-plugin-agentcss
 
 ```sh
 # 改 package.json 的 version（或 npm version patch --no-git-tag-version）
-git commit -am "chore: 0.2.5"
-git tag -a v0.2.5 -m "agentcss ^0.27.7"
-git push --atomic origin main v0.2.5
+git commit -am "chore: 0.2.6"
+git tag -a v0.2.6 -m "agentcss ^0.27.9"
+git push --atomic origin main v0.2.6
 ```
 
 `.github/workflows/release.yml` 依次做五件事：tag 与 `package.json` 版本一致 →

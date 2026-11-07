@@ -20,6 +20,7 @@ import path from 'node:path'
 
 import {
   apply, inject, name, assertSafePath, assertSafeRemoteUrl,
+  assertRemoteCapability, versionAtLeast,
 } from '../index.js'
 
 const require = createRequire(import.meta.url)
@@ -118,8 +119,9 @@ fs.mkdirSync(tmpRoot, { recursive: true })
 const workdir = fs.mkdtempSync(path.join(tmpRoot, 'agentcss-dsh-'))
 // 计划跑几组。改测试就改这里 —— 少跑一组必须当场失败，不能"全部通过"。
 // 10~14 是「失败也安全」的反例；15~17 是路径 / 远程 URL 边界；
-// 18 是跨仓承诺（agentcss 0.27.7 发版后由版本门控转成的硬断言）。不许再删回去。
-const PLAN = 18
+// 18 是跨仓承诺（agentcss 0.27.7 发版后由版本门控转成的硬断言）；
+// 19~21 是远程能力默认关闭 + strict 网络策略接线。不许再删回去。
+const PLAN = 21
 let passed = 0
 /* unverified 只记录「本机平台权限导致反例无法构造」，不再是版本门控：
    0.27.7 起跨仓承诺是硬判据，装到旧库会直接判红而不是标未判定。 */
@@ -358,13 +360,45 @@ try {
   }
   passed += 1
 
-  // ⑰ 工具层接线：不能只有纯函数绿，execute 也要拦住
+  // ⑰ 工具层接线：显式开启远程也不能把环回地址放过去
   await assert.rejects(
     () => tools.get('agentcss_pdf').execute({
       path: 'http://127.0.0.1/', out: path.join(workdir, 'blocked.pdf'),
+      allowRemote: true,
     }),
     /环回|私网|链路本地/,
     'agentcss_pdf 必须真的接上 URL 边界',
+  )
+  passed += 1
+
+  // ⑱ 远程能力默认关闭：不传 allowRemote 时，连公网地址都不许进浏览器
+  await assert.rejects(
+    () => tools.get('agentcss_pdf').execute({
+      path: 'https://example.com/report', out: path.join(workdir, 'remote.pdf'),
+    }),
+    /默认关闭/,
+    '不可信输入能影响 path 时，默认值必须是关闭',
+  )
+  passed += 1
+
+  // ⑲ 能力门的表驱动（纯函数，不联网）：默认关、旧库拒绝开、修复版与后续 minor 放行
+  assert.throws(() => assertRemoteCapability(undefined, '0.27.9'), /默认关闭/)
+  assert.throws(() => assertRemoteCapability(true, '0.27.8'), /0\.27\.9/)
+  assert.throws(() => assertRemoteCapability(true, '0.27.7'), /0\.27\.9/)
+  assert.doesNotThrow(() => assertRemoteCapability(true, '0.27.9'))
+  assert.doesNotThrow(() => assertRemoteCapability(true, '0.28.0'))
+  assert.equal(versionAtLeast('0.27.9', '0.27.9'), true)
+  assert.equal(versionAtLeast('0.27.8', '0.27.9'), false)
+  assert.equal(versionAtLeast('0.28.0', '0.27.9'), true)
+  passed += 1
+
+  // ⑳ 接线不许被摘掉：开启远程时必须真的把 strict 策略传给 CLI
+  const pluginSrc = fs.readFileSync(new URL('../index.js', import.meta.url), 'utf8')
+  assert.match(pluginSrc, /--network-policy=strict/, '必须传 strict 策略给库')
+  assert.match(
+    pluginSrc,
+    /assertRemoteCapability\(args\.allowRemote, libraryVersion\(\)\)/,
+    'pdf execute 必须调用能力门',
   )
   passed += 1
 } finally {

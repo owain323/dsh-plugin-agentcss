@@ -76,6 +76,54 @@ function readLibraryJson(rel) {
   return JSON.parse(fs.readFileSync(path.join(libraryRoot(), rel), 'utf8'))
 }
 
+/** 让程序自报实际加载的库版本，不读 package.json 里声明的范围（E365）。 */
+function libraryVersion() {
+  try {
+    return String(JSON.parse(
+      fs.readFileSync(require.resolve('agentcss/package.json'), 'utf8'),
+    ).version)
+  } catch {
+    return '0.0.0'
+  }
+}
+
+function versionAtLeast(a, b) {
+  const x = String(a).split('.').map(Number)
+  const y = String(b).split('.').map(Number)
+  for (let i = 0; i < 3; i += 1) {
+    if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0)
+  }
+  return true
+}
+
+/**
+ * 远程渲染能力的两道门：
+ *   ① 默认关闭 —— 若工具的 path 会被网页/上传文档这类不可信内容驱动，
+ *      浏览器就成了访问内网的入口。外部复查 2026-11-07 把这条列为发布前事项，
+ *      「明确关闭该能力」是它认可的收口方式之一。
+ *   ② 显式开启也要求库 >= 0.27.9 —— 0.27.7 及更早没有
+ *      --network-policy=strict，挡不住重定向到内网与 DNS rebinding；
+ *      0.27.8 虽有该参数，但在本地代理环境下会把所有公网渲染一起拒掉。
+ *      版本不够时**拒绝开启**，绝不悄悄退化成半套防护。
+ * 纯函数，冒烟测试可以直接做表驱动，不需要真的发起网络请求。
+ */
+function assertRemoteCapability(allowRemote, version) {
+  if (allowRemote !== true) {
+    throw new Error(
+      '远程 URL 渲染默认关闭。只有当 path 来自受信任输入、且确实要渲染远程页面时，'
+      + '才显式传 allowRemote: true；不可信内容能影响 path 时请保持关闭，'
+      + '先把页面存成本地 HTML 再用绝对路径调用。',
+    )
+  }
+  if (!versionAtLeast(version, '0.27.9')) {
+    throw new Error(
+      `开启 allowRemote 需要 agentcss >= 0.27.9（带 --network-policy=strict），`
+      + `当前实际加载 ${version}。旧库挡不住重定向到内网与 DNS rebinding，`
+      + '所以这里拒绝开启，而不是退化成半套防护；请先升级 agentcss。',
+    )
+  }
+}
+
 /** 版式清单从 recipes.json 现算，不写死 —— 库加了版式，这里自动跟上。 */
 function knownRecipes() {
   try {
@@ -254,7 +302,10 @@ function assertSafeRemoteUrl(raw) {
 
 /* 边界判据导出给冒烟测试做表驱动验证：规则只在这一个地方写，测试不许另抄一份。
    Cordis 只认 name / inject / apply，多出来的具名导出不参与插件加载。 */
-export { assertSafePath, assertSafeRemoteUrl, isPrivateHost }
+export {
+  assertSafePath, assertSafeRemoteUrl, isPrivateHost,
+  assertRemoteCapability, versionAtLeast, libraryVersion,
+}
 
 function walkSize(dir) {
   let files = 0
@@ -742,15 +793,23 @@ function pdfTool() {
     description:
       '把 HTML 页面导出成 PDF（本机 Chrome/Edge 无头渲染，等字体与就绪元素后再打印）。'
       + '失败或超出页数预算时不会改写已有的旧 PDF，也不会替你截断内容。'
+      + '远程 http(s) 地址默认关闭：只有显式 allowRemote:true 且库 >= 0.27.9 才启用，'
+      + '启用时走 strict 网络策略（DNS pin + 私网/重定向拦截）。'
       + '页面改完要发出去、或者要交给打印时用这一步。',
     parameters: {
       type: 'object',
       properties: {
         path: {
           type: 'string',
-          description: 'HTML 绝对路径，或 http(s) 地址。远程地址不接受环回/私网/'
-            + '链路本地（含云元数据）、非 http(s) scheme 与带凭据的 URL；'
-            + '本地路径不能落在系统/程序目录，也不接受指向那里的符号链接。',
+          description: 'HTML 绝对路径（推荐），或 http(s) 地址（默认关闭，见 allowRemote）。'
+            + '远程地址不接受环回/私网/链路本地（含云元数据）、非 http(s) scheme '
+            + '与带凭据的 URL；本地路径不能落在系统/程序目录，也不接受指向那里的符号链接。',
+        },
+        allowRemote: {
+          type: 'boolean',
+          description: '是否允许渲染远程 http(s) 地址。默认 false。仅当 path 来自'
+            + '受信任输入、且已装 agentcss >= 0.27.9 时才传 true；不可信内容能影响 '
+            + 'path 时保持关闭。开启会附带 --network-policy=strict。',
         },
         out: {
           type: 'string',
@@ -784,11 +843,19 @@ function pdfTool() {
       /* 用"像 URL"而不是"是 http(s)"来分叉：file:// / ftp:// 之类的输入
          不能被当成相对路径去猜，应该由 assertSafeRemoteUrl 明确拒绝。 */
       const looksRemote = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw)
+      const isHttp = /^https?:\/\//i.test(raw)
       if (!looksRemote && raw.trim() === '') throw new Error('path 不能为空')
+      /* 先做 URL 本身的边界：非 http(s) scheme（file:// / ftp:// …）与环回/
+         私网地址都应该在这里被明确拒绝，而不是先撞上"默认关闭 / 库版本不够"
+         这种说不到点子上的报错。 */
       const src = looksRemote ? assertSafeRemoteUrl(raw) : assertSafePath(raw, 'path')
+      if (isHttp) assertRemoteCapability(args.allowRemote, libraryVersion())
       if (!looksRemote && !fs.existsSync(src)) throw new Error(`找不到文件：${src}`)
 
       const cliArgs = ['pdf', src, '--json']
+      /* 能走到这里说明调用方已显式开启、且库带网络策略。传 strict 让浏览器
+         侧做 DNS pin 与重定向/私网拦截；不传的话就只剩插件这层静态检查。 */
+      if (isHttp) cliArgs.push('--network-policy=strict')
       if (args.out !== undefined) cliArgs.push(`--out=${assertSafePath(args.out, 'out')}`)
 
       if (args.paper !== undefined) {
