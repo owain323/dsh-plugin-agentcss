@@ -162,7 +162,10 @@ function walkSize(dir) {
   return { files, bytes }
 }
 
-/** 把 dist 的五个目录复制到页面旁边，让页面用相对路径就能打开。 */
+/**
+ * 把 dist 的五个目录复制进**本次新建的构建目录**。
+ * 这里不删除任何东西：目标是刚由 mkdtempSync 造出来的空目录。
+ */
 function vendorStyles(target) {
   const root = libraryRoot()
   let files = 0
@@ -171,13 +174,31 @@ function vendorStyles(target) {
     const from = path.join(root, 'dist', sub)
     if (!fs.existsSync(from)) continue
     const to = path.join(target, sub)
-    fs.rmSync(to, { recursive: true, force: true })
-    fs.cpSync(from, to, { recursive: true })
+    fs.cpSync(from, to, { recursive: true, force: true })
     const size = walkSize(to)
     files += size.files
     bytes += size.bytes
   }
   return { files, bytes }
+}
+
+/**
+ * 把构建目录里的样式提交到页面目录。
+ *
+ * 🔴 只覆盖同名文件，**绝不删目标目录里多出来的文件**。
+ *    旧实现是 `fs.rmSync(to, {recursive:true})` 再整目录复制：用户自己放在
+ *    agentcss/01-tokens/ 里的 CSS 会被一起删掉，而且这一步完全不受
+ *    `overwrite` 控制（连"目标 index.html 不存在、纯新建"都会删）。
+ *    代价是库升级后废弃的旧文件会留下 —— 多一个用不到的文件，
+ *    比静默丢掉用户文件好得多；库文件名本身是稳定的契约。
+ */
+function commitStyles(builtCss, cssDir) {
+  fs.mkdirSync(cssDir, { recursive: true })
+  for (const sub of VENDOR_DIRS) {
+    const from = path.join(builtCss, sub)
+    if (!fs.existsSync(from)) continue
+    fs.cpSync(from, path.join(cssDir, sub), { recursive: true, force: true })
+  }
 }
 
 /* ==========================================================================
@@ -338,7 +359,8 @@ function newPageTool(recipes) {
         },
         overwrite: {
           type: 'boolean',
-          description: '目标 index.html 已存在时是否覆盖。默认 false（壳不覆盖正在被改的文件）。',
+          description: '目标 index.html 已存在时是否重建。默认 false（壳不覆盖正在被改的文件）；'
+            + '设为 true 时会先备份旧文件，任何一步失败都自动还原。',
         },
       },
       required: ['dir'],
@@ -349,44 +371,81 @@ function newPageTool(recipes) {
       const dir = requireAbsolute(args.dir, 'dir')
       const recipe = args.recipe || recipes[0]
       const html = path.join(dir, 'index.html')
+      const cssDir = path.join(dir, 'agentcss')
 
-      if (fs.existsSync(html)) {
-        if (args.overwrite !== true) {
-          throw new Error(
-            `目标已存在：${html}。壳不会覆盖已有文件（它可能正在被改）。`
-            + '换一个 dir，或显式传 overwrite=true。',
-          )
-        }
-        // scaffold 自己也不覆盖 —— overwrite 是"我确认要重来"，所以由这里先删。
-        fs.rmSync(html, { force: true })
-      }
+      /* ① 前置判定全部在**动手之前**做完：拒绝时不碰目标一个字节 */
       if (fs.existsSync(dir) && !fs.statSync(dir).isDirectory()) {
         throw new Error(`${dir} 已存在且不是目录。`)
       }
-
-      fs.mkdirSync(dir, { recursive: true })
-
-      const result = await runCli(
-        ['scaffold', recipe, '--out', html, '--css-prefix=agentcss', '--json'],
-        { signal: exec && exec.signal },
-      )
-      const out = parseJsonOut(result.stdout)
-      if (result.code !== 0 || !out.ok) {
-        const detail = (out.error && out.error.message) || excerpt(result.stderr) || '未知原因'
-        throw new Error(`scaffold 失败（退出码 ${result.code}）：${detail}`)
+      const hadHtml = fs.existsSync(html)
+      if (hadHtml && args.overwrite !== true) {
+        throw new Error(
+          `目标已存在：${html}。壳不会覆盖已有文件（它可能正在被改）。`
+          + '换一个 dir，或显式传 overwrite=true。',
+        )
       }
 
-      const cssDir = path.join(dir, 'agentcss')
-      const size = vendorStyles(cssDir)
+      /* ② 全部产物先落进同目录的临时构建目录。
+             scaffold 失败 / 复制失败 ⇒ 直接清掉，目标目录完全没被写过。 */
+      fs.mkdirSync(dir, { recursive: true })
+      const build = fs.mkdtempSync(path.join(dir, '.agentcss-build-'))
+      const builtHtml = path.join(build, 'index.html')
+      const builtCss = path.join(build, 'agentcss')
+      /* 旧 HTML 的备份放在 dir 里、**不在** build 里：这样 finally 清 build
+         时不会把"回滚失败后唯一的用户副本"一起删掉。 */
+      const backup = hadHtml
+        ? path.join(dir, `.agentcss-prev-${process.pid}-${Date.now().toString(36)}.html`)
+        : null
 
-      return {
-        ok: true,
-        html,
-        cssDir,
-        recipe,
-        requires: Array.isArray(out.requires) ? out.requires.map(String) : [],
-        cssFiles: size.files,
-        cssBytes: size.bytes,
+      try {
+        const result = await runCli(
+          ['scaffold', recipe, '--out', builtHtml, '--css-prefix=agentcss', '--json'],
+          { signal: exec && exec.signal },
+        )
+        const out = parseJsonOut(result.stdout)
+        if (result.code !== 0 || !out.ok) {
+          const detail = (out.error && out.error.message) || excerpt(result.stderr) || '未知原因'
+          throw new Error(`scaffold 失败（退出码 ${result.code}）：${detail}`)
+        }
+        const size = vendorStyles(builtCss)
+
+        /* ③ 提交：先备份旧 HTML（同盘 rename，原子），再落新 HTML。
+               任何一步抛错，catch 都把旧 HTML 还原回去。 */
+        if (backup) fs.renameSync(html, backup)
+        fs.renameSync(builtHtml, html)
+        commitStyles(builtCss, cssDir)
+        if (backup) fs.rmSync(backup, { force: true })
+
+        return {
+          ok: true,
+          html,
+          cssDir,
+          recipe,
+          requires: Array.isArray(out.requires) ? out.requires.map(String) : [],
+          cssFiles: size.files,
+          cssBytes: size.bytes,
+        }
+      } catch (e) {
+        if (backup && fs.existsSync(backup)) {
+          try {
+            if (fs.existsSync(html)) fs.rmSync(html, { force: true })
+            fs.renameSync(backup, html)
+          } catch {
+            throw new Error(
+              `${e.message}\n  另外：旧的 ${html} 已备份在 ${backup}，`
+              + '自动还原失败 —— 请手工取回，别直接删。',
+            )
+          }
+        } else if (!hadHtml && fs.existsSync(html)) {
+          /* 目标原本没有 index.html：提交到一半失败，不能凭空留一份半成品
+             让人以为建页成功了。删掉它，回到"什么都没发生"的状态。 */
+          try { fs.rmSync(html, { force: true }) } catch { /* 下面照常抛原错 */ }
+        }
+        throw e
+      } finally {
+        try {
+          fs.rmSync(build, { recursive: true, force: true, maxRetries: 3 })
+        } catch { /* Windows 偶发占用；下次建页不受影响 */ }
       }
     },
   }

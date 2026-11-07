@@ -12,11 +12,27 @@
  */
 
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
+import { createRequire } from 'node:module'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
 import { apply, inject, name } from '../index.js'
+
+const require = createRequire(import.meta.url)
+const sha256 = f => createHash('sha256').update(fs.readFileSync(f)).digest('hex')
+const libVersion = JSON.parse(
+  fs.readFileSync(require.resolve('agentcss/package.json'), 'utf8'),
+).version
+const atLeast = (a, b) => {
+  const x = a.split('.').map(Number)
+  const y = b.split('.').map(Number)
+  for (let i = 0; i < 3; i += 1) {
+    if (x[i] !== y[i]) return x[i] > y[i]
+  }
+  return true
+}
 
 /* ---------- 一份 dsh-tools 子集的断言器（故意写得比实现更严） ---------- */
 
@@ -99,8 +115,14 @@ const tmpRoot = process.env.AGENTCSS_DSH_TMP || os.tmpdir()
 fs.mkdirSync(tmpRoot, { recursive: true })
 const workdir = fs.mkdtempSync(path.join(tmpRoot, 'agentcss-dsh-'))
 // 计划跑几组。改测试就改这里 —— 少跑一组必须当场失败，不能"全部通过"。
-const PLAN = 9
+// 10~14 是外部复查指出「失败也安全」之后补的反例，不许再删回去。
+const PLAN = 14
 let passed = 0
+/* 跨仓承诺（README L57 / agentcss_pdf 的 description）由**库**的行为兑现。
+   库修复在 0.27.7 才会发上 npm；在此之前这条只能标"未判定"，
+   既不能假绿，也不能让 CI 因为装到旧库而变红。发版后把下限提上来，
+   下面的门控会自动变成硬断言，届时可删掉 unverified 这套分支。 */
+const unverified = []
 
 try {
   const catalog = await tools.get('agentcss_catalog').execute({ tier: 'asset' })
@@ -186,10 +208,116 @@ try {
     '超预算必须判失败并说清原因（不替使用者截断）',
   )
   passed += 1
+
+  // ⑩ overwrite:true + scaffold 失败 ⇒ 旧 index.html 逐字节保留、临时目录清空
+  const guardDir = path.join(workdir, 'guard')
+  fs.mkdirSync(guardDir, { recursive: true })
+  const guardHtml = path.join(guardDir, 'index.html')
+  fs.writeFileSync(guardHtml, 'OLD-INDEX-SENTINEL', 'utf8')
+  await assert.rejects(
+    () => tools.get('agentcss_new_page').execute({
+      dir: guardDir, overwrite: true, recipe: 'no/such/recipe',
+    }),
+    /scaffold 失败/,
+    '未知版式必须判失败',
+  )
+  assert.equal(
+    fs.readFileSync(guardHtml, 'utf8'), 'OLD-INDEX-SENTINEL',
+    'scaffold 失败后旧 index.html 必须逐字节不变（旧实现先删后生成，会直接丢）',
+  )
+  assert.deepEqual(
+    fs.readdirSync(guardDir).filter(n => n.startsWith('.agentcss-build-')), [],
+    '失败后不能留下临时构建目录',
+  )
+  passed += 1
+
+  // ⑪ 全新目录里预置的用户 CSS，建页时不得被删（旧实现无条件递归删目标目录）
+  const userDir = path.join(workdir, 'user-css')
+  const userTokens = path.join(userDir, 'agentcss', '01-tokens')
+  fs.mkdirSync(userTokens, { recursive: true })
+  const userFile = path.join(userTokens, 'my-custom.css')
+  fs.writeFileSync(userFile, 'USER-FILE-DO-NOT-DELETE', 'utf8')
+  const withUser = await tools.get('agentcss_new_page').execute({ dir: userDir })
+  assert.equal(withUser.ok, true, '目录里已有 agentcss/ 时也要能建页')
+  assert.equal(
+    fs.readFileSync(userFile, 'utf8'), 'USER-FILE-DO-NOT-DELETE',
+    '建页不得删除用户放在 agentcss/ 里的文件，且不受 overwrite 影响',
+  )
+  passed += 1
+
+  // ⑫ 成功路径也要干净：临时构建目录与旧 HTML 备份都不许残留
+  const leftovers = fs.readdirSync(pageDir).filter(
+    n => n.startsWith('.agentcss-build-') || n.startsWith('.agentcss-prev-'),
+  )
+  assert.deepEqual(leftovers, [], `成功建页后不应留下临时文件：${leftovers.join(', ')}`)
+  passed += 1
+
+  // ⑬ 提交阶段失败（把 agentcss 做成文件，让样式提交抛错）⇒ 旧 index.html 还原
+  const rollbackDir = path.join(workdir, 'rollback')
+  fs.mkdirSync(rollbackDir, { recursive: true })
+  const rollbackHtml = path.join(rollbackDir, 'index.html')
+  fs.writeFileSync(rollbackHtml, 'OLD-INDEX-ROLLBACK-SENTINEL', 'utf8')
+  fs.writeFileSync(path.join(rollbackDir, 'agentcss'), 'not-a-directory', 'utf8')
+  await assert.rejects(
+    () => tools.get('agentcss_new_page').execute({ dir: rollbackDir, overwrite: true }),
+    /agentcss|EEXIST/i,
+    '样式目标不是目录时必须判失败',
+  )
+  assert.equal(
+    fs.readFileSync(rollbackHtml, 'utf8'), 'OLD-INDEX-ROLLBACK-SENTINEL',
+    '提交中途失败时旧 index.html 必须被还原（这是事务性写入的核心）',
+  )
+  passed += 1
+
+  // ⑭ 原本没有 index.html 的目录提交失败 ⇒ 不许凭空留一份半成品
+  const freshDir = path.join(workdir, 'fresh-fail')
+  fs.mkdirSync(freshDir, { recursive: true })
+  fs.writeFileSync(path.join(freshDir, 'agentcss'), 'not-a-directory', 'utf8')
+  await assert.rejects(
+    () => tools.get('agentcss_new_page').execute({ dir: freshDir }),
+    /agentcss|EEXIST/i,
+  )
+  assert.equal(
+    fs.existsSync(path.join(freshDir, 'index.html')), false,
+    '原本没有 index.html，失败后也不该留下一个半成品',
+  )
+  passed += 1
+
+  // 跨仓承诺：插件说「超预算不改写旧 PDF」，兑现方是 agentcss 的 pdf 导出器。
+  // 不计入 PLAN —— 未判定不算通过。
+  if (atLeast(libVersion, '0.27.7')) {
+    const crossOut = path.join(workdir, 'cross.pdf')
+    fs.writeFileSync(crossOut, 'OLD-PDF-CROSS-SENTINEL', 'utf8')
+    const beforeCross = sha256(crossOut)
+    await assert.rejects(
+      () => tools.get('agentcss_pdf').execute({ path: longPath, out: crossOut, maxPages: 1 }),
+      /页数预算/,
+    )
+    assert.equal(
+      sha256(crossOut), beforeCross,
+      '超预算失败时旧 PDF 必须逐字节不变（插件对外的原话）',
+    )
+    console.log(`cross-repo promise: verified against agentcss ${libVersion}`)
+  } else {
+    unverified.push(
+      `插件承诺「超预算不改写旧 PDF」需 agentcss >= 0.27.7；当前 ${libVersion} 未含该修复`,
+    )
+  }
 } finally {
   fs.rmSync(workdir, { recursive: true, force: true })
 }
 
+/* 门控自己也要有牙：不能写一个"永远为 false"的版本比较，
+   等库发了修复版还继续标未判定 —— 那就是 E366 那类空转。 */
+assert.equal(atLeast('0.27.7', '0.27.7'), true, '修复版必须让门控转真')
+assert.equal(atLeast('0.27.6', '0.27.7'), false, '当前版本必须保持未判定')
+assert.equal(atLeast('0.28.0', '0.27.7'), true, '后续 minor 不能被误判成旧版')
+
 assert.equal(passed, PLAN, '实际跑过的组数与计划不一致 —— 有断言被跳过')
 console.log(`through: ${passed}/${PLAN} 组断言全部通过`)
+if (unverified.length > 0) {
+  for (const line of unverified) {
+    console.log(`  [UNVERIFIED] ${line} —— 未判定，不计通过也不计失败`)
+  }
+}
 console.log(`tools: ${registered.map((d) => d.name).join(', ')}`)

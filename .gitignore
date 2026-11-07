@@ -2,3 +2,6 @@ node_modules/
 .tmp/
 *.log
 package-lock.json
+# 建页的临时构建目录与旧 HTML 备份（正常路径会自动清理；异常时备份要留着给人取回）
+.agentcss-build-*/
+.agentcss-prev-*.html
