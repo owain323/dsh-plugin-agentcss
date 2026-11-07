@@ -87,7 +87,7 @@ dsh plugin --profile desktop add https://github.com/owain323/dsh-plugin-agentcss
 | 项 | 要求 |
 |---|---|
 | Node | >= 18（Harness 桌面版自带 24） |
-| `agentcss` | `^0.27.5` —— `ai scaffold` / `ai check` 是 0.27.0；PDF 的就绪契约与失败保护是 0.27.1；纸面墨阶是 0.27.3；图不溢出容器是 0.27.4；仓库名与包名统一、站点根路径改 `/agentcss/` 是 0.27.5 |
+| `agentcss` | `^0.27.7` —— `ai scaffold` / `ai check` 是 0.27.0；PDF 的就绪契约是 0.27.1；纸面墨阶是 0.27.3；图不溢出容器是 0.27.4；仓库名与包名统一、站点根路径改 `/agentcss/` 是 0.27.5；**导出判定失败不改写旧 PDF 是 0.27.7** |
 | Harness | 0.2.x 实测（0.2.2-rc.1） |
 
 两个刻意的选择：
@@ -120,12 +120,15 @@ dsh plugin --profile desktop add https://github.com/owain323/dsh-plugin-agentcss
   都生成成功后才提交；提交时旧 `index.html` 先备份，中途任一步失败自动还原。
   样式目录只覆盖库自带的同名文件，**不删除**你放在 `agentcss/` 里的其它文件；
   代价是库升级后废弃的旧文件可能留在目录里（不会被页面引用，可自行清理）。
-- **版本范围收紧到 `^0.27.5`。** 0.x 的 caret 是「只在这个 minor 内」，
+- **版本范围收紧到 `^0.27.7`。** 0.x 的 caret 是「只在这个 minor 内」，
   库出 0.28 时插件要跟着升一次。这是有意的：CLI 的开关语义比 CSS 更容易变。
-  下限选 0.27.5，是因为过半能力取决于库那一层：
+  下限选 0.27.7，是因为过半能力取决于库那一层：
   0.27.3 之前是灰底浅字；0.27.4 之前 `.rep__fig` 里的图没有宽度约束，
-  一张 1920px 的截图会把整页撑破；0.27.5 才把仓库名与包名统一。
-  这三件事在屏幕上都不明显，要么打出来才知道，要么写进 URL 才知道。
+  一张 1920px 的截图会把整页撑破；0.27.5 才把仓库名与包名统一；
+  **0.27.7 之前，PDF 导出判定失败（超页数预算 / 页树读数不一致）会先替换
+  最终输出再报错，把调用方手里的旧 PDF 悄悄换掉** —— 而本插件对外承诺
+  「失败或超预算时不改写旧 PDF」。这条承诺由库兑现，所以下限必须卡在修复版，
+  冒烟测试也把「预置旧 PDF + 超预算 ⇒ 逐字节不变」写成了硬断言。
 
 ## 发版
 
@@ -133,9 +136,9 @@ dsh plugin --profile desktop add https://github.com/owain323/dsh-plugin-agentcss
 
 ```sh
 # 改 package.json 的 version（或 npm version patch --no-git-tag-version）
-git commit -am "chore: 0.2.4"
-git tag -a v0.2.4 -m "agentcss ^0.27.5"
-git push --atomic origin main v0.2.4
+git commit -am "chore: 0.2.5"
+git tag -a v0.2.5 -m "agentcss ^0.27.7"
+git push --atomic origin main v0.2.5
 ```
 
 `.github/workflows/release.yml` 依次做五件事：tag 与 `package.json` 版本一致 →

@@ -117,13 +117,12 @@ const tmpRoot = process.env.AGENTCSS_DSH_TMP || os.tmpdir()
 fs.mkdirSync(tmpRoot, { recursive: true })
 const workdir = fs.mkdtempSync(path.join(tmpRoot, 'agentcss-dsh-'))
 // 计划跑几组。改测试就改这里 —— 少跑一组必须当场失败，不能"全部通过"。
-// 10~14 是「失败也安全」的反例；15~17 是路径 / 远程 URL 边界，不许再删回去。
-const PLAN = 17
+// 10~14 是「失败也安全」的反例；15~17 是路径 / 远程 URL 边界；
+// 18 是跨仓承诺（agentcss 0.27.7 发版后由版本门控转成的硬断言）。不许再删回去。
+const PLAN = 18
 let passed = 0
-/* 跨仓承诺（README L57 / agentcss_pdf 的 description）由**库**的行为兑现。
-   库修复在 0.27.7 才会发上 npm；在此之前这条只能标"未判定"，
-   既不能假绿，也不能让 CI 因为装到旧库而变红。发版后把下限提上来，
-   下面的门控会自动变成硬断言，届时可删掉 unverified 这套分支。 */
+/* unverified 只记录「本机平台权限导致反例无法构造」，不再是版本门控：
+   0.27.7 起跨仓承诺是硬判据，装到旧库会直接判红而不是标未判定。 */
 const unverified = []
 
 try {
@@ -285,26 +284,26 @@ try {
   )
   passed += 1
 
-  // 跨仓承诺：插件说「超预算不改写旧 PDF」，兑现方是 agentcss 的 pdf 导出器。
-  // 不计入 PLAN —— 未判定不算通过。
-  if (atLeast(libVersion, '0.27.7')) {
-    const crossOut = path.join(workdir, 'cross.pdf')
-    fs.writeFileSync(crossOut, 'OLD-PDF-CROSS-SENTINEL', 'utf8')
-    const beforeCross = sha256(crossOut)
-    await assert.rejects(
-      () => tools.get('agentcss_pdf').execute({ path: longPath, out: crossOut, maxPages: 1 }),
-      /页数预算/,
-    )
-    assert.equal(
-      sha256(crossOut), beforeCross,
-      '超预算失败时旧 PDF 必须逐字节不变（插件对外的原话）',
-    )
-    console.log(`cross-repo promise: verified against agentcss ${libVersion}`)
-  } else {
-    unverified.push(
-      `插件承诺「超预算不改写旧 PDF」需 agentcss >= 0.27.7；当前 ${libVersion} 未含该修复`,
-    )
-  }
+  // ⑱ 跨仓承诺（硬判据）：插件说「超预算不改写旧 PDF」，兑现方是库的导出器。
+  // 依赖下限 ^0.27.7 保证 CI 不会装到未修复的库；这里再核对一次**实际加载**的版本，
+  // 防止插件私有 node_modules 里残留旧版（E365）。
+  assert.ok(
+    atLeast(libVersion, '0.27.7'),
+    `agentcss 必须 >= 0.27.7（含 PDF 失败保护），实际加载 ${libVersion}`,
+  )
+  const crossOut = path.join(workdir, 'cross.pdf')
+  fs.writeFileSync(crossOut, 'OLD-PDF-CROSS-SENTINEL', 'utf8')
+  const beforeCross = sha256(crossOut)
+  await assert.rejects(
+    () => tools.get('agentcss_pdf').execute({ path: longPath, out: crossOut, maxPages: 1 }),
+    /页数预算/,
+  )
+  assert.equal(
+    sha256(crossOut), beforeCross,
+    '超预算失败时旧 PDF 必须逐字节不变（插件对外的原话）',
+  )
+  console.log(`cross-repo promise: verified against agentcss ${libVersion}`)
+  passed += 1
 
   // ⑮ 路径边界：系统目录 / 盘符根 / 符号链接越界都拒绝，正常子目录仍放行
   const sysDir = process.env.WINDIR || (process.platform === 'win32' ? 'C:\\Windows' : '/etc')
@@ -372,10 +371,10 @@ try {
   fs.rmSync(workdir, { recursive: true, force: true })
 }
 
-/* 门控自己也要有牙：不能写一个"永远为 false"的版本比较，
-   等库发了修复版还继续标未判定 —— 那就是 E366 那类空转。 */
-assert.equal(atLeast('0.27.7', '0.27.7'), true, '修复版必须让门控转真')
-assert.equal(atLeast('0.27.6', '0.27.7'), false, '当前版本必须保持未判定')
+/* 版本比较自己也要有牙：不能写一个"永远为 true"的判据把旧库放过去，
+   那就是 E366 那类空转。 */
+assert.equal(atLeast('0.27.7', '0.27.7'), true, '修复版本身必须算达标')
+assert.equal(atLeast('0.27.6', '0.27.7'), false, '旧库不能被误判成修复版')
 assert.equal(atLeast('0.28.0', '0.27.7'), true, '后续 minor 不能被误判成旧版')
 
 assert.equal(passed, PLAN, '实际跑过的组数与计划不一致 —— 有断言被跳过')
