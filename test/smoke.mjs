@@ -194,6 +194,11 @@ try {
   assert.ok(pdf.bytes > 1000, `PDF 只有 ${pdf.bytes} 字节，明显不对`)
   assert.ok(pdf.pages >= 1, '至少要有一页')
   assert.match(pdf.paperSize, /^[0-9]+×[0-9]+pt$/, `纸幅读不出来：${pdf.paperSize}`)
+  /* 网络策略必须出现在返回值里：本地文件是 off、且不算降级。
+     远程降级（走代理时 strict 弱一档）无法在离线冒烟里造，只能在真实公网
+     复测里验；这里守的是"字段别被漏掉"这条底线。 */
+  assert.equal(pdf.networkPolicy, 'off', `本地导出的 networkPolicy 应为 off，实际 ${pdf.networkPolicy}`)
+  assert.equal(pdf.networkPolicyDegraded, false, '本地导出不该报降级')
   const pdfText = tools.get('agentcss_pdf').output.render({}, pdf)[0]
   assert.equal(pdfText.type, 'text')
   assert.match(pdfText.text, /已导出/)

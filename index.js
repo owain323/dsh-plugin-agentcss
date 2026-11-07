@@ -928,6 +928,11 @@ function pdfTool() {
         paperSize: String(out.paperSize || '?'),
         margin: String(out.margin || '由页面自己决定'),
         jsErrors: Array.isArray(out.jsErrors) ? out.jsErrors.length : 0,
+        /* 网络策略必须如实回传。调用方（模型）要能判断这一页远程导出到底被
+           保护到哪一层：走系统代理时 strict 的第 ③ 层会降级，防护弱一档，
+           这种事不能只写在 README 里、却在返回值里装作没发生。 */
+        networkPolicy: out.networkPolicy === undefined ? null : out.networkPolicy,
+        networkPolicyDegraded: out.networkPolicyDegraded === true,
       }
     },
   }
