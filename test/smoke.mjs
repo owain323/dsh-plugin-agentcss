@@ -18,7 +18,9 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { apply, inject, name } from '../index.js'
+import {
+  apply, inject, name, assertSafePath, assertSafeRemoteUrl,
+} from '../index.js'
 
 const require = createRequire(import.meta.url)
 const sha256 = f => createHash('sha256').update(fs.readFileSync(f)).digest('hex')
@@ -115,8 +117,8 @@ const tmpRoot = process.env.AGENTCSS_DSH_TMP || os.tmpdir()
 fs.mkdirSync(tmpRoot, { recursive: true })
 const workdir = fs.mkdtempSync(path.join(tmpRoot, 'agentcss-dsh-'))
 // 计划跑几组。改测试就改这里 —— 少跑一组必须当场失败，不能"全部通过"。
-// 10~14 是外部复查指出「失败也安全」之后补的反例，不许再删回去。
-const PLAN = 14
+// 10~14 是「失败也安全」的反例；15~17 是路径 / 远程 URL 边界，不许再删回去。
+const PLAN = 17
 let passed = 0
 /* 跨仓承诺（README L57 / agentcss_pdf 的 description）由**库**的行为兑现。
    库修复在 0.27.7 才会发上 npm；在此之前这条只能标"未判定"，
@@ -303,6 +305,69 @@ try {
       `插件承诺「超预算不改写旧 PDF」需 agentcss >= 0.27.7；当前 ${libVersion} 未含该修复`,
     )
   }
+
+  // ⑮ 路径边界：系统目录 / 盘符根 / 符号链接越界都拒绝，正常子目录仍放行
+  const sysDir = process.env.WINDIR || (process.platform === 'win32' ? 'C:\\Windows' : '/etc')
+  const fsRoot = path.parse(process.cwd()).root
+  assert.throws(() => assertSafePath(sysDir, 'dir'), /不允许写入|盘符根/,
+    '系统目录必须拒绝写入')
+  assert.throws(() => assertSafePath(fsRoot, 'dir'), /盘符根/,
+    '盘符根必须拒绝')
+  assert.equal(typeof assertSafePath(workdir, 'dir'), 'string',
+    '工作区子目录不能被一刀切拒掉')
+  await assert.rejects(
+    () => tools.get('agentcss_new_page').execute({ dir: sysDir }),
+    /不允许写入/,
+    'new_page 必须真的接上路径边界',
+  )
+  const linkPath = path.join(workdir, 'link-to-system')
+  let linkMade = false
+  try {
+    fs.symlinkSync(sysDir, linkPath, process.platform === 'win32' ? 'junction' : 'dir')
+    linkMade = true
+  } catch (e) {
+    if (['EPERM', 'EACCES', 'ENOTSUP'].includes(e.code)) {
+      unverified.push('符号链接越界反例：本机无权创建目录链接')
+    } else {
+      throw e
+    }
+  }
+  if (linkMade) {
+    assert.throws(() => assertSafePath(linkPath, 'dir'), /不允许写入|盘符根/,
+      '符号链接指向系统目录必须被拒')
+  }
+  passed += 1
+
+  // ⑯ 远程 URL 静态边界：表驱动，含等价 IP 写法；公开地址不能误拒
+  const blocked = [
+    'http://127.0.0.1/', 'http://127.1/', 'http://2130706433/', 'http://0/',
+    'http://localhost/', 'http://LOCALHOST./', 'http://10.1.2.3/',
+    'http://172.16.0.1/', 'http://192.168.1.8/', 'http://100.64.0.1/',
+    'http://169.254.169.254/latest/meta-data/', 'http://[::1]/',
+    'http://[::ffff:127.0.0.1]/', 'file:///etc/passwd', 'ftp://example.com/',
+    'http://user:pass@example.com/',
+  ]
+  for (const u of blocked) {
+    assert.throws(
+      () => assertSafeRemoteUrl(u),
+      /环回|私网|链路本地|只支持|用户名|合法 URL/,
+      `必须拒绝：${u}`,
+    )
+  }
+  for (const u of ['https://example.com/report', 'http://owain323.github.io/agentcss/']) {
+    assert.equal(typeof assertSafeRemoteUrl(u), 'string', `不应误拒：${u}`)
+  }
+  passed += 1
+
+  // ⑰ 工具层接线：不能只有纯函数绿，execute 也要拦住
+  await assert.rejects(
+    () => tools.get('agentcss_pdf').execute({
+      path: 'http://127.0.0.1/', out: path.join(workdir, 'blocked.pdf'),
+    }),
+    /环回|私网|链路本地/,
+    'agentcss_pdf 必须真的接上 URL 边界',
+  )
+  passed += 1
 } finally {
   fs.rmSync(workdir, { recursive: true, force: true })
 }

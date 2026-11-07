@@ -29,7 +29,9 @@
 import { execFile } from 'node:child_process'
 import { createRequire } from 'node:module'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
+import { URL } from 'node:url'
 
 /** 插件在 Cordis 里的名字。与 package.json 的 name 是两回事。 */
 export const name = 'agentcss'
@@ -144,6 +146,115 @@ function requireAbsolute(value, label) {
   }
   return path.normalize(value)
 }
+
+/* ==========================================================================
+ * 路径与远程地址的边界
+ * --------------------------------------------------------------------------
+ * 只要求绝对路径挡不住两件事：符号链接把写入引到系统目录、以及 Agent 拿
+ * 一个不可信的 http(s) 地址去渲染。这里补两道**插件自完备**的检查 ——
+ * 不依赖库的新参数（旧版 CLI 会拒绝未知开关）。
+ *
+ * ⚠️ 明确不声称覆盖：DNS rebinding、远程站点把页面重定向到内网地址。
+ *    重定向由 Chromium 跟随，插件看不到最终 URL。这两条写在 README，
+ *    需要完全边界时应该把远程能力整体关掉（见 S3 的 A 档）。
+ * ========================================================================== */
+
+/**
+ * 不允许写入的子树：系统 / 程序目录。
+ * ⚠️ 故意**不**把 APPDATA / LOCALAPPDATA / /var / /private 整棵禁掉：
+ *    os.tmpdir() 在 Windows 落在 AppData\Local\Temp，在 macOS 落在
+ *    /var/folders（/private/var）。一刀切会把正常临时工作区全判死 ——
+ *    第一版就是这么误伤了冒烟测试自己。禁区只放真正的系统/程序目录。
+ */
+function forbiddenRoots() {
+  const list = process.platform === 'win32'
+    ? [process.env.WINDIR, process.env.SystemRoot, process.env.ProgramFiles,
+      process.env['ProgramFiles(x86)'], process.env.ProgramData]
+    : ['/etc', '/usr', '/bin', '/sbin', '/dev', '/proc', '/sys', '/System']
+  return [...new Set(list.filter(Boolean).map(
+    p => path.resolve(p).toLowerCase().replace(/[\\/]+$/, ''),
+  ))]
+}
+
+/** 目标可能还不存在：向上找到第一个存在的祖先，再解析它的真实路径。 */
+function realNearest(p) {
+  let cur = path.resolve(p)
+  for (;;) {
+    try { fs.lstatSync(cur); return fs.realpathSync(cur) } catch { /* 继续向上 */ }
+    const parent = path.dirname(cur)
+    if (parent === cur) return cur
+    cur = parent
+  }
+}
+
+function assertSafePath(value, label) {
+  const abs = path.resolve(requireAbsolute(value, label))
+  const root = path.parse(abs).root.replace(/[\\/]+$/, '').toLowerCase()
+  const bare = abs.replace(/[\\/]+$/, '').toLowerCase()
+  if (bare === root) {
+    throw new Error(`${label} 不能是盘符根目录：${abs}`)
+  }
+  const real = realNearest(abs).toLowerCase().replace(/[\\/]+$/, '')
+  for (const bad of forbiddenRoots()) {
+    if (real === bad || real.startsWith(bad + path.sep)) {
+      throw new Error(
+        `${label} 解析后落在不允许写入的目录：${abs} → ${real}。`
+        + '换一个工作区子目录；符号链接指向系统目录同样会被拒绝。',
+      )
+    }
+  }
+  return abs
+}
+
+/** 环回 / 私网 / 链路本地（含云元数据）/ IPv4 映射地址。 */
+function isPrivateHost(host) {
+  const h = host.replace(/^\[|\]$/g, '').replace(/\.$/, '').toLowerCase()
+  if (h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.local')
+      || h.endsWith('.internal') || h === 'metadata') return true
+  /* new URL 会把 2130706433 / 127.1 / 0 这类等价写法规范化成点分十进制 */
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h)
+  if (v4) {
+    const a = Number(v4[1])
+    const b = Number(v4[2])
+    return a === 0 || a === 10 || a === 127
+      || (a === 100 && b >= 64 && b <= 127)
+      || (a === 169 && b === 254)
+      || (a === 172 && b >= 16 && b <= 31)
+      || (a === 192 && b === 168)
+      || (a === 198 && (b === 18 || b === 19))
+      || a >= 224
+  }
+  if (h.indexOf(':') >= 0) {
+    return h === '::1' || h === '::' || h.startsWith('fc') || h.startsWith('fd')
+      || h.startsWith('fe8') || h.startsWith('fe9') || h.startsWith('fea')
+      || h.startsWith('feb') || h.startsWith('::ffff:')
+  }
+  return false
+}
+
+function assertSafeRemoteUrl(raw) {
+  let u
+  try { u = new URL(raw) } catch {
+    throw new Error(`远程地址不是合法 URL：${excerpt(raw, 120)}`)
+  }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+    throw new Error(`远程地址只支持 http/https，收到 ${u.protocol}`)
+  }
+  if (u.username || u.password) {
+    throw new Error('远程地址不允许带用户名/密码')
+  }
+  if (isPrivateHost(u.hostname)) {
+    throw new Error(
+      `远程地址指向环回/私网/链路本地地址，拒绝渲染：${excerpt(raw, 120)}`
+      + '（本机页面请用本地文件路径；确需内网地址请走受信任的本地流程）',
+    )
+  }
+  return u.href
+}
+
+/* 边界判据导出给冒烟测试做表驱动验证：规则只在这一个地方写，测试不许另抄一份。
+   Cordis 只认 name / inject / apply，多出来的具名导出不参与插件加载。 */
+export { assertSafePath, assertSafeRemoteUrl, isPrivateHost }
 
 function walkSize(dir) {
   let files = 0
@@ -368,7 +479,7 @@ function newPageTool(recipes) {
     },
     output: { schema: NEW_PAGE_OUT, render: (_args, value) => textBlock(renderNewPage(value)) },
     async execute(args, exec) {
-      const dir = requireAbsolute(args.dir, 'dir')
+      const dir = assertSafePath(args.dir, 'dir')
       const recipe = args.recipe || recipes[0]
       const html = path.join(dir, 'index.html')
       const cssDir = path.join(dir, 'agentcss')
@@ -539,7 +650,7 @@ function checkTool(recipes) {
     },
     output: { schema: CHECK_OUT, render: (_args, value) => textBlock(renderCheck(value)) },
     async execute(args, exec) {
-      const file = requireAbsolute(args.path, 'path')
+      const file = assertSafePath(args.path, 'path')
       if (!fs.existsSync(file)) throw new Error(`找不到文件：${file}`)
 
       const cliArgs = ['check', file, '--json']
@@ -635,7 +746,12 @@ function pdfTool() {
     parameters: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: 'HTML 绝对路径，或 http(s) 地址。' },
+        path: {
+          type: 'string',
+          description: 'HTML 绝对路径，或 http(s) 地址。远程地址不接受环回/私网/'
+            + '链路本地（含云元数据）、非 http(s) scheme 与带凭据的 URL；'
+            + '本地路径不能落在系统/程序目录，也不接受指向那里的符号链接。',
+        },
         out: {
           type: 'string',
           description: 'PDF 输出绝对路径。省略时与 HTML 同名同目录；远程地址必须显式给。',
@@ -665,13 +781,15 @@ function pdfTool() {
     output: { schema: PDF_OUT, render: (_args, value) => textBlock(renderPdf(value)) },
     async execute(args, exec) {
       const raw = typeof args.path === 'string' ? args.path : ''
-      const remote = /^https?:\/\//i.test(raw)
-      if (!remote && raw.trim() === '') throw new Error('path 不能为空')
-      const src = remote ? raw : requireAbsolute(raw, 'path')
-      if (!remote && !fs.existsSync(src)) throw new Error(`找不到文件：${src}`)
+      /* 用"像 URL"而不是"是 http(s)"来分叉：file:// / ftp:// 之类的输入
+         不能被当成相对路径去猜，应该由 assertSafeRemoteUrl 明确拒绝。 */
+      const looksRemote = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw)
+      if (!looksRemote && raw.trim() === '') throw new Error('path 不能为空')
+      const src = looksRemote ? assertSafeRemoteUrl(raw) : assertSafePath(raw, 'path')
+      if (!looksRemote && !fs.existsSync(src)) throw new Error(`找不到文件：${src}`)
 
       const cliArgs = ['pdf', src, '--json']
-      if (args.out !== undefined) cliArgs.push(`--out=${requireAbsolute(args.out, 'out')}`)
+      if (args.out !== undefined) cliArgs.push(`--out=${assertSafePath(args.out, 'out')}`)
 
       if (args.paper !== undefined) {
         if (!PAPERS.includes(args.paper)) {
