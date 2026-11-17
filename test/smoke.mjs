@@ -93,9 +93,9 @@ assert.deepEqual(inject, ['tools'], 'inject 必须且只需要 tools')
 const registered = []
 apply({ tools: { register(def) { registered.push(def) } } })
 
-assert.equal(registered.length, 4, '必须注册四个工具')
+assert.equal(registered.length, 5, "必须注册五个工具")
 const tools = new Map(registered.map((def) => [def.name, def]))
-for (const id of ['agentcss_catalog', 'agentcss_new_page', 'agentcss_check', 'agentcss_pdf']) {
+for (const id of ['agentcss_catalog', 'agentcss_new_page', 'agentcss_check', 'agentcss_pdf', 'agentcss_shot']) {
   assert.ok(tools.has(id), `缺工具：${id}`)
 }
 

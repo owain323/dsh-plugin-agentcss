@@ -128,7 +128,7 @@ dsh plugin --profile desktop add https://github.com/owain323/dsh-plugin-agentcss
   ⇒ 所以**入参不可信时仍以"默认关闭"为主防线**，不要把 strict 当成万能许可。
 - 建页时会把库样式表复制到页面旁边（约 340 KB / 80 个文件）。这是拿体积换**自包含**：
   页面双击就能打开，不发网络请求，发给别人也不会掉样式。
-- `ai shot`（横向溢出与 JS 报错的截图体检）还没接进来 —— 它是「看」的循环，与这里「写对 + 发出去」不是一条线。
+- `ai shot`（「看」的循环）已接入（0.27.15 起）：agentcss_shot 返回结构化判定（verdict 分型：真溢出 fail / 设计内滚动 warn / JS 报错 fail）与截图。
 - PDF 是**屏幕渲染结果**。实体打印机的纸张、驱动缩放、双面、页眉页脚仍需人工打样一次；`agentcss_pdf` 不声称替你验过。
 
 ## 设计取舍

@@ -938,6 +938,174 @@ function pdfTool() {
   }
 }
 
+const SHOT_OUT = {
+  type: 'object',
+  required: ['ok', 'verdict'],
+  properties: {
+    ok: { type: 'boolean' },
+    verdict: {
+      type: 'object',
+      required: ['status', 'reasons'],
+      properties: {
+        status: { enum: ['pass', 'warn', 'fail'] },
+        reasons: {
+          type: 'array',
+          items: {
+            type: 'object',
+            required: ['code', 'severity', 'where', 'detail'],
+            properties: {
+              code: { type: 'string' },
+              severity: { enum: ['pass', 'warn', 'fail'] },
+              where: { type: 'string' },
+              detail: { type: 'string' },
+            },
+          },
+        },
+      },
+    },
+    summary: { type: 'string' },
+    consoleErrors: { type: 'array', items: { type: 'string' } },
+    shots: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          width: { type: 'number' },
+          out: { type: 'string' },
+          overflowCount: { type: 'number' },
+          overflow: { type: 'array', items: { type: 'string' } },
+        },
+      },
+    },
+  },
+}
+
+
+function shotTool() {
+  return {
+    name: 'agentcss_shot',
+    description:
+      '真渲染截图体检：按给定视口宽度真实渲染页面，返回**结构化判定**（verdict）与截图。'
+      + 'verdict 分型：pass（无溢出无报错）/ warn（溢出在设计内滚动容器里，表格横向滚动属此类，'
+      + '确认是契约行为即可）/ fail（真溢出、JS 报错、采集不完整）。'
+      + '页面改完、交付之前跑这一步 —— 溢出、JS 报错、真实渲染效果，静态 check 结构性看不到。',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description: 'HTML 绝对路径（推荐），或 http(s) 地址（默认关闭，见 allowRemote）。'
+            + '远程地址边界与 agentcss_pdf 相同：环回/私网/非 http(s) 拒绝。',
+        },
+        allowRemote: {
+          type: 'boolean',
+          description: '是否允许渲染远程 http(s) 地址。默认 false。仅当 path 来自'
+            + '受信任输入、且已装 agentcss >= 0.27.15 时才传 true；不可信内容能影响 '
+            + 'path 时保持关闭。开启会附带 --network-policy=strict。',
+        },
+        widths: {
+          type: 'array',
+          items: { type: 'number' },
+          description: '视口宽度列表（200–4000 的整数），默认 [390, 1440]。'
+            + '每个宽度都会截一张并各自出判定。',
+        },
+        height: {
+          type: 'number',
+          description: '视口高度（200–4000 的整数），默认 900。',
+        },
+        full: {
+          type: 'boolean',
+          description: '整页截图（超过 10000px 会截断并在结果里注明）。默认 false。',
+        },
+        waitMs: {
+          type: 'number',
+          description: '加载后额外等待毫秒（0–60000，默认 800）。',
+        },
+        outPrefix: {
+          type: 'string',
+          description: '截图输出绝对路径前缀，自动加 {width} 与 .png。'
+            + '省略时输出到 HTML 同目录：agentcss-shot-{width}.png。',
+        },
+      },
+      required: ['path'],
+      additionalProperties: false,
+    },
+    output: { schema: SHOT_OUT, render: (_args, value) => textBlock(renderShot(value)) },
+    async execute(args, exec) {
+      const raw = typeof args.path === 'string' ? args.path : ''
+      const looksRemote = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw)
+      const isHttp = /^https?:\/\//i.test(raw)
+      if (!looksRemote && raw.trim() === '') throw new Error('path 不能为空')
+      const src = looksRemote ? assertSafeRemoteUrl(raw) : assertSafePath(raw, 'path')
+      if (isHttp) assertRemoteCapability(args.allowRemote, libraryVersion())
+      if (!looksRemote && !fs.existsSync(src)) throw new Error(`找不到文件：${src}`)
+
+      const widths = Array.isArray(args.widths) && args.widths.length
+        ? args.widths.map(Number)
+        : undefined
+      const outPrefix = typeof args.outPrefix === 'string' && args.outPrefix.trim() !== ''
+        ? assertSafePath(args.outPrefix, 'outPrefix')
+        : path.join(
+            path.dirname(src),
+            looksRemote ? 'agentcss-shot-{width}.png' : 'agentcss-shot-{width}.png',
+          )
+
+      const cliArgs = ['shot', src, '--json',
+        `--out=${outPrefix}`,
+        '--width=' + (widths ? widths.join(',') : ''),
+      ]
+      if (args.height !== undefined) cliArgs.push(`--height=${Number(args.height)}`)
+      if (args.full === true) cliArgs.push('--full')
+      if (args.waitMs !== undefined) cliArgs.push(`--wait=${Number(args.waitMs)}`)
+      if (isHttp) cliArgs.push('--network-policy=strict')
+      cliArgs.push('--chrome=' + resolveChromePath())
+
+      const result = await runCli(cliArgs, { signal: exec && exec.signal })
+      const out = parseJsonOut(result.stdout)
+
+      if (result.code !== 0 && !out.ok && !out.verdict) {
+        const detail = (out.error && out.error.message) || excerpt(result.stderr) || '未知原因'
+        throw new Error(`shot 没能跑完（退出码 ${result.code}）：${detail}`)
+      }
+
+      /* verdict 是库的 ai/shot-verdict.js 算的（判定语义固化在库里），
+         插件只透传，不二次解释 —— 解释层放插件里就会两处漂移。 */
+      return {
+        ok: out.ok === true,
+        verdict: out.verdict || { status: 'fail', reasons: [], summary: '库未返回 verdict' },
+        summary: typeof out.summary === 'string' ? out.summary : '',
+        consoleErrors: Array.isArray(out.consoleErrors) ? out.consoleErrors : [],
+        shots: (Array.isArray(out.shots) ? out.shots : []).map((s) => ({
+          width: Number(s.width),
+          out: String(s.out),
+          overflowCount: Number(s.overflowCount || 0),
+          overflow: Array.isArray(s.overflow) ? s.overflow : [],
+        })),
+      }
+    },
+  }
+}
+
+function renderShot(value) {
+  const lines = []
+  const v = value.verdict || { status: 'fail', reasons: [], summary: '' }
+  const mark = v.status === 'pass' ? '✅' : v.status === 'warn' ? '⚠️' : '🔴'
+  lines.push(`${mark} 判定：${v.status.toUpperCase()} —— ${v.summary}`)
+  for (const r of v.reasons || []) {
+    lines.push(`  [${r.severity}] ${r.where}  ${r.code}  ${r.detail}`)
+  }
+  if ((value.consoleErrors || []).length > 0) {
+    lines.push('')
+    lines.push(`JS 报错 ${value.consoleErrors.length} 条：`)
+    for (const e of value.consoleErrors.slice(0, 5)) lines.push('  ' + e)
+  }
+  for (const s of value.shots || []) {
+    lines.push(`  截图：${s.out}（${s.png ? s.png.width + '×' + s.png.height : ''}）`)
+  }
+  return lines.join('\n')
+}
+
+
 /** 插件入口。Cordis 会把 `ctx` 给进来，注册出去的东西卸载时自动撤掉。 */
 export function apply(ctx) {
   const recipes = knownRecipes()
@@ -945,4 +1113,5 @@ export function apply(ctx) {
   ctx.tools.register(newPageTool(recipes))
   ctx.tools.register(checkTool(recipes))
   ctx.tools.register(pdfTool())
+  ctx.tools.register(shotTool())
 }
